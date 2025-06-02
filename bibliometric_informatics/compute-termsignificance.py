@@ -177,3 +177,4 @@ except FileNotFoundError:
         # ... (add more defaults as needed)
     }
 DEFAULT_IDF = math.log(50000 / 10000)  # Updated to match arXiv corpus
+""")
