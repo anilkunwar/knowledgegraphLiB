@@ -27,19 +27,8 @@ It queries arXiv for document counts, calculates IDFs, and generates a downloada
 file to replace the hardcoded `IDF_APPROX` table in your main app. The app focuses on terms relevant 
 to lithium-ion batteries, phase field methods, dendrite growth, and related electrochemical phenomena.
 Previous computation results are displayed during new computations, with warnings for new or uncomputed keywords.
+New keywords are computed efficiently, with an option to recompute all terms.
 """)
-
-# Cache function to load previous JSON
-@st.cache_data
-def load_previous_json(cache_path="previous_idf_approx.json"):
-    try:
-        if os.path.exists(cache_path):
-            with open(cache_path, "r") as f:
-                return json.load(f)
-        return None
-    except Exception as e:
-        logger.error(f"Error loading cached JSON from {cache_path}: {str(e)}")
-        return None
 
 # Define terms from IDF_APPROX (initial set of core terms)
 IDF_APPROX_TERMS = [
@@ -106,10 +95,28 @@ st.write(f"**Estimated corpus size (N)**: {N} documents (electrochemistry and ma
 # Initialize IDF dictionary
 IDF_APPROX = {}
 
+# Cache function to load previous JSON
+@st.cache_data
+def load_previous_json(cache_path="previous_idf_approx.json"):
+    try:
+        if os.path.exists(cache_path):
+            with open(cache_path, "r") as f:
+                return json.load(f)
+        return None
+    except Exception as e:
+        logger.error(f"Error loading cached JSON from {cache_path}: {str(e)}")
+        return None
+
 # Load previous JSON to identify new keywords
 previous_json = load_previous_json()
 previous_terms = set(previous_json.keys()) if previous_json else set()
 new_terms = [term for term in terms if term not in previous_terms]
+
+# Initialize IDF_APPROX with cached values
+if previous_json:
+    for term in terms:
+        if term in previous_json:
+            IDF_APPROX[term] = previous_json[term]
 
 # Create initial JSON with warnings for new or uncomputed terms
 display_json = {}
@@ -125,22 +132,26 @@ for term in terms:
             "status": "computed: IDF from previous run"
         }
 
-# Display previous JSON (or initial JSON with warnings) before computation
-st.subheader("Previous or Initial Computation Results")
-st.json(display_json)
-st.markdown("*Note: New or uncomputed keywords are marked with a warning and use a default IDF. These will be updated during computation.*")
-
 # Button to start computation
+st.subheader("Compute IDF Values")
+recompute_all = st.checkbox("Recompute all terms (otherwise only new terms are computed)")
 if st.button("Compute IDFs from arXiv"):
     with st.spinner("Querying arXiv and computing IDFs..."):
         # Progress bar
         progress_bar = st.progress(0)
         status_text = st.empty()
         results = []
+        
+        # Determine terms to compute
+        terms_to_compute = terms if recompute_all else new_terms
+        logger.info(f"Computing IDFs for {len(terms_to_compute)} terms: {terms_to_compute}")
+
+        # Create a placeholder for JSON display
+        json_placeholder = st.empty()
 
         # Query arXiv
         client = arxiv.Client()
-        for i, term in enumerate(terms):
+        for i, term in enumerate(terms_to_compute):
             try:
                 # Format query (wrap phrases in quotes)
                 query_term = f'"{term}"' if " " in term else term
@@ -148,7 +159,7 @@ if st.button("Compute IDFs from arXiv"):
                 query = f"{query_term} cat:cond-mat.mtrl-sci OR cat:physics.chem-ph OR cat:physics.app-ph"
                 search = arxiv.Search(
                     query=query,
-                    max_results=1000,  # Limit to avoid timeout
+                    max_results=1000,  # Limit to timeout
                     sort_by=arxiv.SortCriterion.SubmittedDate
                 )
                 # Count results
@@ -172,14 +183,25 @@ if st.button("Compute IDFs from arXiv"):
                 results.append({"Term": term, "Document Count": "Error", "IDF": round(math.log(N / 10000), 3)})
 
             # Update progress
-            progress = (i + 1) / len(terms)
+            progress = (i + 1) / len(terms_to_compute)
             progress_bar.progress(progress)
-            status_text.text(f"Processed {i + 1}/{len(terms)} terms: {term}")
+            status_text.text(f"Processed {i + 1}/{len(terms_to_compute)} terms: {term}")
 
-            # Update JSON display on the fly
-            st.subheader("Current Computation Progress (JSON)")
-            st.json(display_json)
+            # Update JSON display in placeholder
+            with json_placeholder.container():
+                st.subheader("Current Computation Progress (JSON)")
+                st.json(display_json)
             time.sleep(1)  # Respect arXiv rate limits (~1 request/second)
+
+        # Add cached results for terms not recomputed
+        if not recompute_all:
+            for term in terms:
+                if term not in terms_to_compute and term in previous_json:
+                    results.append({
+                        "Term": term,
+                        "Document Count": "Cached",
+                        "IDF": round(previous_json[term], 3)
+                    })
 
         # Save to JSON
         output_path = "idf_approx.json"
@@ -232,6 +254,11 @@ if st.button("Compute IDFs from arXiv"):
         except Exception as e:
             st.error(f"Error accessing idf_approx.json for download: {str(e)}")
             logger.error(f"Error accessing idf_approx.json for download: {str(e)}")
+
+# Display previous JSON (or initial JSON with warnings) after the button
+st.subheader("Previous or Initial Computation Results")
+st.json(display_json)
+st.markdown("*Note: New or uncomputed keywords are marked with a warning and use a default IDF. These will be updated during computation.*")
 
 # Instructions for integration
 st.subheader("Integration Instructions")
