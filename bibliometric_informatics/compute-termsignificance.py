@@ -162,18 +162,18 @@ st.markdown("""
 1. **Download `idf_approx.json`** after computation.
 2. Place it in your main app's directory (e.g., `/home/kindness/workstation/.../corpus_data/`).
 3. Update your main app's code to load `idf_approx.json` instead of the hardcoded `IDF_APPROX`:
-   ```python
-   import json
-   import math
-   try:
-       with open("idf_approx.json", "r") as f:
-           IDF_APPROX = json.load(f)
-       logger.info("Loaded arXiv-derived IDF_APPROX from idf_approx.json")
-   except FileNotFoundError:
-       logger.warning("idf_approx.json not found, using default IDF_APPROX")
-       IDF_APPROX = {
-           "study": math.log(50000 / 40000), "analysis": math.log(50000 / 35000),
-           "lithium-ion battery": math.log(50000 / 10000), "dendrite": math.log(50000 / 5000),
-           # ... (add more defaults as needed)
-       }
-   DEFAULT_IDF = math.log(50000 / 10000)  # Updated to match arXiv corpus
+```python
+import json
+import math
+try:
+    with open("idf_approx.json", "r") as f:
+        IDF_APPROX = json.load(f)
+    logger.info("Loaded arXiv-derived IDF_APPROX from idf_approx.json")
+except FileNotFoundError:
+    logger.warning("idf_approx.json not found, using default IDF_APPROX")
+    IDF_APPROX = {
+        "study": math.log(50000 / 40000), "analysis": math.log(50000 / 35000),
+        "lithium-ion battery": math.log(50000 / 10000), "dendrite": math.log(50000 / 5000),
+        # ... (add more defaults as needed)
+    }
+DEFAULT_IDF = math.log(50000 / 10000)  # Updated to match arXiv corpus
