@@ -29,6 +29,7 @@ file to replace the hardcoded `IDF_APPROX` table in your main app. The app focus
 to lithium-ion batteries, phase field methods, dendrite growth, and related electrochemical phenomena.
 If new keywords are added, warnings are shown with default IDFs, and recomputation is suggested.
 Download the updated JSON and manually update the GitHub repository's `idf_approx.json`.
+You can also download the existing repository's `idf_approx.json` at any time.
 """)
 
 # Define terms from IDF_APPROX (initial set of core terms)
@@ -60,7 +61,7 @@ KEYWORD_CATEGORIES = {
         "operando imaging", "x-ray diffraction", "scanning electron microscopy",
         "transmission electron microscopy", "electrochemical impedance",
         "in-situ characterization", "computational modeling", "continuum modeling",
-        "phase field simulation", "lattice boltzmann method", "monte carlo simulation"
+        "phase field modeling", "lattice boltzmann method", "monte carlo simulation"
     ],
     "Physical Phenomena": [
         "dendrite growth", "lithium plating", "electrolyte decomposition",
@@ -354,13 +355,13 @@ if st.button("Compute IDFs from arXiv"):
 
             st.plotly_chart(fig, use_container_width=True)
 
-        # Download button
+        # Download button for updated JSON
         st.subheader("Download Updated IDF Results")
         if os.path.exists(output_path):
             try:
                 with open(output_path, "r") as f:
                     st.download_button(
-                        label="Download idf_approx.json",
+                        label="Download Updated idf_approx.json",
                         data=f,
                         file_name="idf_approx.json",
                         mime="application/json"
@@ -370,24 +371,43 @@ if st.button("Compute IDFs from arXiv"):
                     "(e.g., via GitHub web interface or git push) to make the new IDFs available in the app."
                 )
             except Exception as e:
-                st.error(f"Error accessing idf_approx.json for download: {str(e)}")
-                logger.error(f"Error accessing idf_approx.json for download: {str(e)}")
+                st.error(f"Error accessing updated idf_approx.json for download: {str(e)}")
+                logger.error(f"Error accessing updated idf_approx.json for download: {str(e)}")
         else:
-            st.warning("No idf_approx.json file available to download. Please compute IDFs first.")
+            st.warning("No updated idf_approx.json file available to download. Please compute IDFs first.")
 
 # Display previous JSON (or initial JSON with warnings) after the button
 st.subheader("Previous or Initial Computation Results")
 st.json(display_json)
 st.markdown("*Note: New or uncomputed keywords are marked with a warning and use a default IDF. These will be updated during computation.*")
 
+# Download button for existing repository JSON
+st.subheader("Download Existing Repository IDF Results")
+if os.path.exists(repo_json_path):
+    try:
+        with open(repo_json_path, "r") as f:
+            st.download_button(
+                label="Download Existing idf_approx.json",
+                data=f,
+                file_name="idf_approx.json",
+                mime="application/json"
+            )
+        st.markdown("This is the current `idf_approx.json` loaded from the GitHub repository.")
+    except Exception as e:
+        st.error(f"Error accessing existing idf_approx.json for download: {str(e)}")
+        logger.error(f"Error accessing existing idf_approx.json for download: {str(e)}")
+else:
+    st.warning("No existing idf_approx.json found in the repository to download.")
+
 # Instructions for integration
 st.subheader("Integration Instructions")
 st.markdown("""
 1. **Compute and Download `idf_approx.json`**:
    - Run the computation in this app to generate updated IDF values.
-   - Download the `idf_approx.json` file using the download button.
+   - Download the `idf_approx.json` file using the "Download Updated idf_approx.json" button.
+   - Alternatively, download the current repository's `idf_approx.json` using the "Download Existing idf_approx.json" button.
 2. **Update GitHub Repository**:
-   - Replace the existing `idf_approx.json` in your GitHub repository with the downloaded file.
+   - Replace the existing `idf_approx.json` in your GitHub repository with the downloaded updated file.
    - Use the GitHub web interface: Navigate to your repository, upload the new `idf_approx.json`, and commit.
    - Alternatively, use git commands:
      ```bash
