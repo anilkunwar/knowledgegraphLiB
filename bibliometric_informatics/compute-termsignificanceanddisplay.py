@@ -6,6 +6,7 @@ import time
 import logging
 from collections import Counter
 import pandas as pd
+import os
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -25,7 +26,20 @@ from the arXiv database, tailored for lithium-ion battery and phase field modeli
 It queries arXiv for document counts, calculates IDFs, and generates a downloadable `idf_approx.json` 
 file to replace the hardcoded `IDF_APPROX` table in your main app. The app focuses on terms relevant 
 to lithium-ion batteries, phase field methods, dendrite growth, and related electrochemical phenomena.
+Previous computation results are displayed during new computations, with warnings for new or uncomputed keywords.
 """)
+
+# Cache function to load previous JSON
+@st.cache_data
+def load_previous_json(cache_path="previous_idf_approx.json"):
+    try:
+        if os.path.exists(cache_path):
+            with open(cache_path, "r") as f:
+                return json.load(f)
+        return None
+    except Exception as e:
+        logger.error(f"Error loading cached JSON from {cache_path}: {str(e)}")
+        return None
 
 # Define terms from IDF_APPROX (initial set of core terms)
 IDF_APPROX_TERMS = [
@@ -92,6 +106,30 @@ st.write(f"**Estimated corpus size (N)**: {N} documents (electrochemistry and ma
 # Initialize IDF dictionary
 IDF_APPROX = {}
 
+# Load previous JSON to identify new keywords
+previous_json = load_previous_json()
+previous_terms = set(previous_json.keys()) if previous_json else set()
+new_terms = [term for term in terms if term not in previous_terms]
+
+# Create initial JSON with warnings for new or uncomputed terms
+display_json = {}
+for term in terms:
+    if term in new_terms or not previous_json:
+        display_json[term] = {
+            "idf": round(math.log(N / 10000), 3),
+            "status": "warning: Using default IDF (not yet computed)"
+        }
+    else:
+        display_json[term] = {
+            "idf": round(previous_json[term], 3),
+            "status": "computed: IDF from previous run"
+        }
+
+# Display previous JSON (or initial JSON with warnings) before computation
+st.subheader("Previous or Initial Computation Results")
+st.json(display_json)
+st.markdown("*Note: New or uncomputed keywords are marked with a warning and use a default IDF. These will be updated during computation.*")
+
 # Button to start computation
 if st.button("Compute IDFs from arXiv"):
     with st.spinner("Querying arXiv and computing IDFs..."):
@@ -118,17 +156,29 @@ if st.button("Compute IDFs from arXiv"):
                 doc_count = max(doc_count, 1)  # Avoid division by zero
                 idf = math.log(N / doc_count)
                 IDF_APPROX[term] = idf
+                display_json[term] = {
+                    "idf": round(idf, 3),
+                    "status": "computed: IDF from current run"
+                }
                 results.append({"Term": term, "Document Count": doc_count, "IDF": round(idf, 3)})
                 logger.info(f"Term: {term}, Documents: {doc_count}, IDF: {idf:.3f}")
             except Exception as e:
                 logger.error(f"Error for '{term}': {str(e)}")
-                IDF_APPROX[term] = math.log(N / 10000)  # Fallback IDF
+                IDF_APPROX[term] = math.log(N / 10000)
+                display_json[term] = {
+                    "idf": round(math.log(N / 10000), 3),
+                    "status": "warning: Using default IDF (computation failed)"
+                }
                 results.append({"Term": term, "Document Count": "Error", "IDF": round(math.log(N / 10000), 3)})
 
             # Update progress
             progress = (i + 1) / len(terms)
             progress_bar.progress(progress)
             status_text.text(f"Processed {i + 1}/{len(terms)} terms: {term}")
+
+            # Update JSON display on the fly
+            st.subheader("Current Computation Progress (JSON)")
+            st.json(display_json)
             time.sleep(1)  # Respect arXiv rate limits (~1 request/second)
 
         # Save to JSON
@@ -142,8 +192,21 @@ if st.button("Compute IDFs from arXiv"):
             logger.error(f"Error saving IDF_APPROX: {str(e)}")
             st.error(f"Error saving IDF_APPROX: {str(e)}")
 
-        # Display JSON file contents
-        st.subheader("Contents of idf_approx.json")
+        # Save to cache file for previous results
+        cache_path = "previous_idf_approx.json"
+        try:
+            with open(cache_path, "w") as f:
+                json.dump(IDF_APPROX, f, indent=4)
+            logger.info(f"Previous IDF_APPROX saved to {cache_path}")
+        except Exception as e:
+            logger.error(f"Error saving previous IDF_APPROX: {str(e)}")
+            st.error(f"Error saving previous IDF_APPROX: {str(e)}")
+
+        # Clear cache to update with new results
+        load_previous_json.clear()
+
+        # Display final JSON file contents
+        st.subheader("Final Computation Results (idf_approx.json)")
         try:
             with open(output_path, "r") as f:
                 json_data = json.load(f)
