@@ -22,6 +22,9 @@ import json
 import pandas as pd
 import yaml
 
+# Set page config as the first Streamlit command
+st.set_page_config(page_title="Lithium-Ion Battery Dendrite Thermodynamics Visualizer", layout="wide")
+
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -170,26 +173,25 @@ def load_keywords(yaml_content):
         return None
 
 # Load IDF_APPROX
+IDF_APPROX = {
+    "lithium-ion batteries": log(1000 / 100),
+    "dendrite formation": log(1000 / 50),
+    "phase-field modeling": log(1000 / 50),
+    "physics-informed neural networks": log(1000 / 50),
+    "Gibbs free energy": log(1000 / 50),
+    "lithium dendrite": log(1000 / 50),
+    "solid electrolyte interphase": log(1000 / 50),
+    "Butler-Volmer equation": log(1000 / 50),
+    "chemical potential": log(1000 / 50)
+}
+DEFAULT_IDF = log(100000 / 10000)
 try:
     json_path = os.path.join(os.path.dirname(__file__), "idf_approx.json")
     with open(json_path, "r") as f:
-        IDF_APPROX = json.load(f)
+        IDF_APPROX.update(json.load(f))
     logger.info("Loaded IDF_APPROX from idf_approx.json")
 except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
-    logger.warning(f"Failed to load idf_approx.json from {json_path}: {str(e)}. Using default IDF_APPROX.")
-    st.warning(f"Could not load idf_approx.json: {str(e)}. Falling back to hardcoded IDF values.")
-    IDF_APPROX = {
-        "lithium-ion batteries": log(1000 / 100),
-        "dendrite formation": log(1000 / 50),
-        "phase-field modeling": log(1000 / 50),
-        "physics-informed neural networks": log(1000 / 50),
-        "Gibbs free energy": log(1000 / 50),
-        "lithium dendrite": log(1000 / 50),
-        "solid electrolyte interphase": log(1000 / 50),
-        "Butler-Volmer equation": log(1000 / 50),
-        "chemical potential": log(1000 / 50)
-    }
-DEFAULT_IDF = log(100000 / 10000)
+    logger.warning(f"Failed to load idf_approx.json from {json_path}: {str(e)}. Using hardcoded IDF values.")
 
 PHYSICS_CATEGORIES = ["dendrite_thermodynamics", "lithium_ion_battery", "electrochemical_kinetics"]
 
@@ -346,7 +348,7 @@ def get_candidate_keywords(text, min_freq, min_length, use_stopwords, custom_sto
     for term in tfidf_scores:
         for category, keywords in KEYWORD_CATEGORIES.items():
             if term in keywords and category in PHYSICS_CATEGORIES:
-                tfidf_scores[term] *= 2.0  # Increased boost for thermodynamic and battery terms
+                tfidf_scores[term] *= 2.0
                 logger.debug(f"Boosted TF-IDF for {term}: {tfidf_scores[term]:.3f}")
     
     if tfidf_weight > 0:
@@ -712,14 +714,17 @@ def clear_selections():
         if key.startswith("multiselect_"):
             del st.session_state[key]
 
-# Streamlit app
-st.set_page_config(page_title="Lithium-Ion Battery Dendrite Thermodynamics Visualizer", layout="wide")
+# Streamlit app UI
 st.title("Lithium-Ion Battery Dendrite Thermodynamics Visualizer")
 st.markdown("""
 Upload one or more PDF files to extract text, perform NER, and generate visualizations 
 (word cloud, network, radar charts) for lithium-ion battery dendrite thermodynamics research. 
 Optionally upload a YAML file to define custom keyword categories.
 """)
+
+# Display warning about idf_approx.json after page config
+if 'idf_load_failed' in locals():
+    st.warning(f"Could not load idf_approx.json: {idf_load_failed}. Using hardcoded IDF values.")
 
 # YAML file uploader
 yaml_file = st.file_uploader("Upload a YAML file with keyword categories (optional)", type="yaml")
