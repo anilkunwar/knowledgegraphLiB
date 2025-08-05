@@ -416,7 +416,49 @@ def save_to_databases(file, full_text, extracted_text):
         metadata_conn.close()
         text_conn.close()
 
-# Load IDF_APPROX (updated with new terms)
+# Extract text from PDF
+def extract_text_from_pdf(file):
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+            tmp_file.write(file.read())
+            tmp_file_path = tmp_file.name
+        pdf_reader = PyPDF2.PdfReader(tmp_file_path)
+        text = ""
+        for page in pdf_reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+        os.unlink(tmp_file_path)
+        return text if text.strip() else f"No text extracted from {file.name}."
+    except Exception as e:
+        logger.error(f"Error extracting text from {file.name}: {str(e)}")
+        return f"Error extracting text from {file.name}: {str(e)}"
+
+# Validate text extraction for a PDF with given phrases
+def validate_text_extraction(text, start_phrase, end_phrase, file_name):
+    try:
+        start_idx = text.lower().find(start_phrase.lower())
+        end_idx = text.lower().find(end_phrase.lower(), start_idx + len(start_phrase))
+        if start_idx == -1 or end_idx == -1:
+            return False, f"Specified phrases not found in {file_name}."
+        return True, f"Valid phrases found in {file_name}."
+    except Exception as e:
+        logger.error(f"Error validating text for {file_name}: {str(e)}")
+        return False, f"Error validating text for {file_name}: {str(e)}"
+
+# Extract text between phrases
+def extract_text_between_phrases(text, start_phrase, end_phrase, file_name):
+    try:
+        start_idx = text.lower().find(start_phrase.lower())
+        end_idx = text.lower().find(end_phrase.lower(), start_idx + len(start_phrase))
+        if start_idx == -1 or end_idx == -1:
+            return f"Specified phrases not found in {file_name}."
+        return text[start_idx:end_idx + len(end_phrase)]
+    except Exception as e:
+        logger.error(f"Error extracting text between phrases in {file_name}: {str(e)}")
+        return f"Error extracting text between phrases in {file_name}: {str(e)}"
+
+# Load IDF_APPROX
 IDF_APPROX = {
     "dendrite growth": log(1000 / 50),
     "lithium metal": log(1000 / 100),
@@ -448,9 +490,17 @@ BBOX_COLORS = ['black', 'white', 'gray', 'lightgray']
 LAYOUT_ALGORITHMS = ['spring', 'circular', 'kamada_kawai', 'shell']
 WORD_ORIENTATIONS = ['horizontal', 'vertical', 'random']
 
-# Initialize session state for custom stopwords
+# Initialize session state
 if 'custom_stopwords' not in st.session_state:
     st.session_state.custom_stopwords = "et al,figure,table"
+if 'file_phrases' not in st.session_state:
+    st.session_state.file_phrases = {}
+if 'validation_results' not in st.session_state:
+    st.session_state.validation_results = {}
+if 'all_validated' not in st.session_state:
+    st.session_state.all_validated = False
+if 'extracted_texts' not in st.session_state:
+    st.session_state.extracted_texts = {}
 
 # NER processing with spaCy and SciBERT
 def perform_ner(text):
@@ -520,7 +570,6 @@ def get_candidate_keywords(text, min_freq, min_length, use_stopwords, custom_sto
     stop_words.update([w.strip().lower() for w in custom_stopwords.split(",") if w.strip()])
     exclude_set = set([w.strip().lower() for w in exclude_keywords.split(",") if w.strip()])
     
-    # Perform NER
     entities = perform_ner(text)
     entity_freq = Counter([ent[0] for ent in entities if len(ent[0]) >= min_length and ent[0] not in stop_words and ent[0] not in exclude_set])
     
@@ -533,7 +582,6 @@ def get_candidate_keywords(text, min_freq, min_length, use_stopwords, custom_sto
         filtered_words = [w for w in words if w.isalnum() and len(w) >= min_length and w not in stop_words and w not in exclude_set]
     word_freq = Counter(filtered_words)
     
-    # Combine entity and word frequencies
     combined_freq = word_freq + entity_freq
     
     phrases = []
@@ -609,36 +657,6 @@ def get_candidate_keywords(text, min_freq, min_length, use_stopwords, custom_sto
     
     return categorized_keywords, combined_freq, phrases, tfidf_scores, term_to_category, idf_sources
 
-# Extract text from PDF
-def extract_text_from_pdf(file):
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-            tmp_file.write(file.read())
-            tmp_file_path = tmp_file.name
-        pdf_reader = PyPDF2.PdfReader(tmp_file_path)
-        text = ""
-        for page in pdf_reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-        os.unlink(tmp_file_path)
-        return text if text.strip() else f"No text extracted from {file.name}."
-    except Exception as e:
-        logger.error(f"Error extracting text from {file.name}: {str(e)}")
-        return f"Error extracting text from {file.name}: {str(e)}"
-
-# Extract text between phrases
-def extract_text_between_phrases(text, start_phrase, end_phrase, file_name):
-    try:
-        start_idx = text.find(start_phrase)
-        end_idx = text.find(end_phrase, start_idx + len(start_phrase))
-        if start_idx == -1 or end_idx == -1:
-            return f"Specified phrases not found in {file_name}."
-        return text[start_idx:end_idx + len(end_phrase)]
-    except Exception as e:
-        logger.error(f"Error extracting text between phrases in {file_name}: {str(e)}")
-        return f"Error extracting text between phrases in {file_name}: {str(e)}"
-
 # Clean phrase for processing
 def clean_phrase(phrase, stop_words):
     words = phrase.split()
@@ -712,7 +730,6 @@ def generate_bibliometric_network(text, selected_keywords, tfidf_scores, label_f
             return None, "No valid words or phrases found for bibliometric network."
         top_words = [word for word, freq in word_freq.most_common(20)]
         
-        # Build co-occurrence network with NER relationships
         sentences = sent_tokenize(text.lower())
         co_occurrences = Counter()
         entities = perform_ner(text)
@@ -802,7 +819,7 @@ def generate_radar_chart(selected_keywords, values, title, selection_criteria, c
         ax.xaxis.grid(True, color=grid_color, linestyle=grid_style, linewidth=grid_thickness, alpha=0.7)
         ax.set_title(title, fontsize=title_font_size, pad=30, fontweight='bold')
         caption = f"{title} generated with: {selection_criteria}"
-        plt.figtext(0.5, 0.02, caption, ha="center", fontsize=caption_font_size, wrap=True, bbox=dict(facecolor='white', edgecolor='black', boxstyle='round,pad=0.5'))
+        plt.figtext(0.5, 0.02, caption, ha="center", fontsize=caption_font_size, wrap=True, bbox=dict(facecolor='white edgecolor='black', boxstyle='round,pad=0.5'))
         plt.tight_layout(rect=[0, 0.1, 1, 0.95])
         ax.set_facecolor('#fafafa')
         return fig, None
@@ -856,295 +873,368 @@ else:
 # Multiple PDF file uploader
 uploaded_files = st.file_uploader("Upload one or more PDF files", type="pdf", accept_multiple_files=True)
 
-# Input fields
-start_phrase = st.text_input("Enter the desired initial phrase", "Introduction")
-end_phrase = st.text_input("Enter the desired final phrase", "Conclusion")
-custom_stopwords_input = st.text_input("Custom stopwords (comma-separated)", value=st.session_state.custom_stopwords)
-exclude_keywords_input = st.text_input("Exclude keywords/phrases (comma-separated)", "preprint,submitted,manuscript")
-st.session_state.custom_stopwords = custom_stopwords_input
-
+# Input fields for phrases per file
 if uploaded_files:
-    with st.spinner("Processing PDFs and saving to databases..."):
-        combined_text = ""
-        extraction_errors = []
-        for uploaded_file in uploaded_files:
-            full_text = extract_text_from_pdf(uploaded_file)
-            if "Error" in full_text:
-                extraction_errors.append(full_text)
-                continue
-            selected_text = extract_text_between_phrases(full_text, start_phrase, end_phrase, uploaded_file.name)
-            if "Error" in selected_text or "not found" in selected_text:
-                extraction_errors.append(selected_text)
-            else:
-                combined_text += f"\n\n--- Text from {uploaded_file.name} ---\n\n{selected_text}"
-                save_to_databases(uploaded_file, full_text, selected_text)
-        
-        if extraction_errors:
-            for error in extraction_errors:
-                st.error(error)
-        
-        if not combined_text.strip():
-            st.error("No valid text extracted from any PDF. Please check the files or phrases.")
-            st.stop()
-        
-        st.subheader("Extracted Text Between Phrases (All PDFs)")
-        st.text_area("Combined Selected Text", combined_text, height=200)
-        
-        st.subheader("Configure Keyword Selection Criteria")
-        min_freq = st.slider("Minimum frequency", min_value=1, max_value=10, value=1)
-        min_length = st.slider("Minimum length", min_value=3, max_value=30, value=10)
-        use_stopwords = st.checkbox("Use stopword filtering", value=True)
-        top_limit = st.slider("Top limit (max keywords)", min_value=10, max_value=100, value=50, step=10)
-        tfidf_weight = st.slider("TF-IDF weighting", min_value=0.0, max_value=1.0, value=1.0, step=0.1)
-        use_nouns_only = st.checkbox("Filter for nouns only", value=False)
-        include_phrases = st.checkbox("Include multi-word phrases", value=True, disabled=True)
-        criteria_parts = [
-            f"frequency ≥ {min_freq}",
-            f"length ≥ {min_length}",
-            "stopwords " + ("enabled" if use_stopwords else "disabled"),
-            f"custom stopwords: {custom_stopwords_input}" if custom_stopwords_input.strip() else "no custom stopwords",
-            f"excluded keywords: {exclude_keywords_input}" if exclude_keywords_input.strip() else "no excluded keywords",
-            f"top {top_limit} keywords",
-            f"TF-IDF weight: {tfidf_weight}",
-            "nouns only" if use_nouns_only else "all parts of speech",
-            "multi-word phrases included"
-        ]
-        st.subheader("Select Keywords and Phrases by Category")
-        if st.button("Clear All Selections"):
-            clear_selections()
-        try:
-            categorized_keywords, word_freq, phrases, tfidf_scores, term_to_category, idf_sources = get_candidate_keywords(
-                combined_text, min_freq, min_length, use_stopwords, custom_stopwords_input, exclude_keywords_input,
-                top_limit, tfidf_weight, use_nouns_only, include_phrases
+    st.subheader("Specify Extraction Phrases for Each PDF")
+    all_valid = True
+    for file in uploaded_files:
+        with st.expander(f"Phrases for {file.name}"):
+            # Initialize session state for phrases if not already set
+            if file.name not in st.session_state.file_phrases:
+                st.session_state.file_phrases[file.name] = {
+                    "start_phrase": "Introduction",
+                    "end_phrase": "Conclusion"
+                }
+            
+            # Input fields for start and end phrases
+            start_phrase = st.text_input(
+                f"Enter the desired initial phrase for {file.name}",
+                value=st.session_state.file_phrases[file.name]["start_phrase"],
+                key=f"start_phrase_{file.name}"
             )
-        except Exception as e:
-            st.error(f"Error processing keywords: {str(e)}")
-            logger.error(f"Error in get_candidate_keywords: {str(e)}")
-            st.stop()
-        selected_keywords = []
-        for category in KEYWORD_CATEGORIES:
-            keywords = [term for term, _ in categorized_keywords.get(category, [])]
-            with st.expander(f"{category} ({len(keywords)} keywords/phrases)"):
-                if keywords:
-                    selected = st.multiselect(
-                        f"Select keywords from {category}",
-                        options=keywords,
-                        default=[] if st.session_state.clear_selections else keywords[:min(5, len(keywords))],
-                        key=f"multiselect_{category}_{uuid.uuid4()}"
-                    )
-                    selected_keywords.extend(selected)
+            end_phrase = st.text_input(
+                f"Enter the desired final phrase for {file.name}",
+                value=st.session_state.file_phrases[file.name]["end_phrase"],
+                key=f"end_phrase_{file.name}"
+            )
+            
+            # Update session state with user input
+            st.session_state.file_phrases[file.name]["start_phrase"] = start_phrase
+            st.session_state.file_phrases[file.name]["end_phrase"] = end_phrase
+            
+            # Validate text extraction
+            full_text = extract_text_from_pdf(file)
+            if "Error" in full_text:
+                st.error(full_text)
+                st.session_state.validation_results[file.name] = (False, full_text)
+                all_valid = False
+                continue
+            
+            is_valid, message = validate_text_extraction(full_text, start_phrase, end_phrase, file.name)
+            st.session_state.validation_results[file.name] = (is_valid, message)
+            
+            if is_valid:
+                st.success(message)
+            else:
+                st.error(message)
+                all_valid = False
+    
+    st.session_state.all_validated = all_valid
+    
+    # Button to proceed with extraction
+    if st.button("Proceed with Text Extraction", disabled=not all_valid):
+        with st.spinner("Extracting text from PDFs..."):
+            combined_text = ""
+            extraction_errors = []
+            for file in uploaded_files:
+                full_text = extract_text_from_pdf(file)
+                if "Error" in full_text:
+                    extraction_errors.append(full_text)
+                    continue
+                
+                start_phrase = st.session_state.file_phrases[file.name]["start_phrase"]
+                end_phrase = st.session_state.file_phrases[file.name]["end_phrase"]
+                selected_text = extract_text_between_phrases(full_text, start_phrase, end_phrase, file.name)
+                
+                if "Error" in selected_text or "not found" in selected_text:
+                    extraction_errors.append(selected_text)
                 else:
-                    st.write("No keywords or phrases found for this category.")
-        st.session_state.clear_selections = False
-        with st.expander("Debug Information"):
-            if word_freq:
-                st.write("Single Words and Entities (Top 20):", word_freq.most_common(20))
-            if phrases:
-                st.write("Extracted Phrases (Top 20):", phrases[:20])
-            if categorized_keywords:
-                st.write("Categorized Keywords:", {k: [t[0] for t in v] for k, v in categorized_keywords.items()})
-        with st.expander("IDF Source Details"):
-            if idf_sources:
-                idf_data = [
-                    {
-                        "Term": term,
-                        "Frequency": idf_sources[term]["frequency"],
-                        "TF-IDF Score": round(tfidf_scores.get(term, 0), 3),
-                        "IDF Value": round(idf_sources[term]["idf"], 3),
-                        "Source": idf_sources[term]["source"]
-                    }
-                    for term in tfidf_scores
-                ]
-                idf_df = pd.DataFrame(idf_data).sort_values(by=["Source", "TF-IDF Score"], ascending=[True, False])
-                def highlight_json(row):
-                    return ["font-weight: bold" if row["Source"] == "JSON" else "" for _ in row]
-                source_filter = st.selectbox("Filter by IDF Source", ["All", "JSON", "Estimated"])
-                if source_filter != "All":
-                    idf_df = idf_df[idf_df["Source"] == source_filter]
-                styled_df = idf_df.style.apply(highlight_json, axis=1).format({"TF-IDF Score": "{:.3f}", "IDF Value": "{:.3f}"})
-                st.dataframe(styled_df, use_container_width=True)
-                st.download_button(
-                    label="Download IDF Sources (JSON)",
-                    data=json.dumps(idf_data, indent=4),
-                    file_name="idf_sources.json",
-                    mime="application/json"
+                    combined_text += f"\n\n--- Text from {file.name} ---\n\n{selected_text}"
+                    save_to_databases(file, full_text, selected_text)
+                    st.session_state.extracted_texts[file.name] = selected_text
+            
+            if extraction_errors:
+                for error in extraction_errors:
+                    st.error(error)
+            
+            if not combined_text.strip():
+                st.error("No valid text extracted from any PDF. Please check the files or phrases.")
+                st.stop()
+            
+            st.subheader("Extracted Text Between Phrases (All PDFs)")
+            st.text_area("Combined Selected Text", combined_text, height=200)
+            
+            # Proceed with keyword selection and visualization
+            st.subheader("Configure Keyword Selection Criteria")
+            custom_stopwords_input = st.text_input("Custom stopwords (comma-separated)", value=st.session_state.custom_stopwords)
+            exclude_keywords_input = st.text_input("Exclude keywords/phrases (comma-separated)", "preprint,submitted,manuscript")
+            st.session_state.custom_stopwords = custom_stopwords_input
+            
+            min_freq = st.slider("Minimum frequency", min_value=1, max_value=10, value=1)
+            min_length = st.slider("Minimum length", min_value=3, max_value=30, value=10)
+            use_stopwords = st.checkbox("Use stopword filtering", value=True)
+            top_limit = st.slider("Top limit (max keywords)", min_value=10, max_value=100, value=50, step=10)
+            tfidf_weight = st.slider("TF-IDF weighting", min_value=0.0, max_value=1.0, value=1.0, step=0.1)
+            use_nouns_only = st.checkbox("Filter for nouns only", value=False)
+            include_phrases = st.checkbox("Include multi-word phrases", value=True, disabled=True)
+            
+            criteria_parts = [
+                f"frequency ≥ {min_freq}",
+                f"length ≥ {min_length}",
+                "stopwords " + ("enabled" if use_stopwords else "disabled"),
+                f"custom stopwords: {custom_stopwords_input}" if custom_stopwords_input.strip() else "no custom stopwords",
+                f"excluded keywords: {exclude_keywords_input}" if exclude_keywords_input.strip() else "no excluded keywords",
+                f"top {top_limit} keywords",
+                f"TF-IDF weight: {tfidf_weight}",
+                "nouns only" if use_nouns_only else "all parts of speech",
+                "multi-word phrases included"
+            ]
+            
+            st.subheader("Select Keywords and Phrases by Category")
+            if st.button("Clear All Selections"):
+                clear_selections()
+            
+            try:
+                categorized_keywords, word_freq, phrases, tfidf_scores, term_to_category, idf_sources = get_candidate_keywords(
+                    combined_text, min_freq, min_length, use_stopwords, custom_stopwords_input, exclude_keywords_input,
+                    top_limit, tfidf_weight, use_nouns_only, include_phrases
                 )
-        if not selected_keywords:
-            st.error("Please select at least one keyword or phrase.")
-            st.stop()
-        st.subheader("Visualization Settings")
-        st.markdown("### General Visualization Settings")
-        label_font_size = st.slider("Label font size", min_value=8, max_value=24, value=12, step=1)
-        line_thickness = st.slider("Line thickness", min_value=0.5, max_value=6.0, value=2.5, step=0.5)
-        title_font_size = st.slider("Title font size", min_value=10, max_value=24, value=16, step=1)
-        caption_font_size = st.slider("Caption font size", min_value=8, max_value=16, value=10, step=1)
-        transparency = st.slider("Transparency (nodes, edges, fills)", min_value=0.1, max_value=1.0, value=0.8, step=0.1)
-        label_rotation = st.slider("Label rotation (degrees)", min_value=0, max_value=90, value=0, step=5)
-        label_offset = st.slider("Label offset", min_value=0.0, max_value=0.1, value=0.02, step=0.01)
-        criteria_parts.extend([
-            f"label font size: {label_font_size}",
-            f"line thickness: {line_thickness}",
-            f"title font size: {title_font_size}",
-            f"caption font size: {caption_font_size}",
-            f"transparency: {transparency}",
-            f"label rotation: {label_rotation}°",
-            f"label offset: {label_offset}"
-        ])
-        st.markdown("### Word Cloud Settings")
-        wordcloud_colormap = st.selectbox("Select colormap for word cloud", options=COLORMAPS, index=0)
-        word_orientation = st.selectbox("Word orientation", options=WORD_ORIENTATIONS, index=0)
-        font_step = st.slider("Font size step", min_value=1, max_value=10, value=2, step=1)
-        background_color = st.selectbox("Background color", options=['white', 'black', 'lightgray'], index=0)
-        contour_width = st.slider("Contour width", min_value=0.0, max_value=5.0, value=0.0, step=0.5)
-        contour_color = st.selectbox("Contour color", options=COLORS, index=0)
-        criteria_parts.extend([
-            f"word cloud colormap: {wordcloud_colormap}",
-            f"word orientation: {word_orientation}",
-            f"font step: {font_step}",
-            f"background color: {background_color}",
-            f"contour width: {contour_width}",
-            f"contour color: {contour_color}"
-        ])
-        st.markdown("### Network Settings")
-        network_style = st.selectbox("Select style for network", options=NETWORK_STYLES, index=0)
-        node_colormap = st.selectbox("Select colormap for network nodes", options=COLORMAPS, index=0)
-        edge_colormap = st.selectbox("Select colormap for network edges", options=COLORMAPS, index=7)
-        layout_algorithm = st.selectbox("Select layout algorithm", options=LAYOUT_ALGORITHMS, index=0)
-        node_size_scale = st.slider("Node size scale", min_value=10, max_value=100, value=50, step=5)
-        node_shape = st.selectbox("Node shape", options=NODE_SHAPES, index=0)
-        node_linewidth = st.slider("Node border thickness", min_value=0.5, max_value=5.0, value=1.5, step=0.5)
-        node_edgecolor = st.selectbox("Node border color", options=COLORS, index=0)
-        edge_style = st.selectbox("Edge style", options=EDGE_STYLES, index=0)
-        label_font_color = st.selectbox("Label font color", options=COLORS, index=0)
-        label_font_family = st.selectbox("Label font family", options=FONT_FAMILIES, index=0)
-        label_bbox_facecolor = st.selectbox("Label background color", options=BBOX_COLORS, index=0)
-        label_bbox_alpha = st.slider("Label background transparency", min_value=0.1, max_value=1.0, value=0.6, step=0.1)
-        criteria_parts.extend([
-            f"network style: {network_style}",
-            f"node colormap: {node_colormap}",
-            f"edge colormap: {edge_colormap}",
-            f"layout: {layout_algorithm}",
-            f"node size scale: {node_size_scale}",
-            f"node shape: {node_shape}",
-            f"node border thickness: {node_linewidth}",
-            f"node border color: {node_edgecolor}",
-            f"edge style: {edge_style}",
-            f"label font color: {label_font_color}",
-            f"label font family: {label_font_family}",
-            f"label background color: {label_bbox_facecolor}",
-            f"label background transparency: {label_bbox_alpha}"
-        ])
-        st.markdown("### Radar Chart Settings")
-        radar_max_keywords = st.slider("Number of keywords for radar charts", min_value=3, max_value=12, value=6, step=1)
-        freq_radar_colormap = st.selectbox("Colormap for frequency radar chart", options=COLORMAPS, index=0)
-        tfidf_radar_colormap = st.selectbox("Colormap for TF-IDF radar chart", options=COLORMAPS, index=0)
-        grid_color = st.selectbox("Grid color", options=COLORS, index=0)
-        grid_style = st.selectbox("Grid style", options=EDGE_STYLES, index=0)
-        grid_thickness = st.slider("Grid thickness", min_value=0.5, max_value=5.0, value=2.0, step=0.5)
-        criteria_parts.extend([
-            f"radar max keywords: {radar_max_keywords}",
-            f"frequency radar colormap: {freq_radar_colormap}",
-            f"tfidf radar colormap: {tfidf_radar_colormap}",
-            f"grid color: {grid_color}",
-            f"grid style: {grid_style}",
-            f"grid thickness: {grid_thickness}"
-        ])
-        selection_criteria = ", ".join(criteria_parts)
-        st.subheader("Word Cloud")
-        wordcloud_fig, wordcloud_error = generate_word_cloud(
-            combined_text, selected_keywords, tfidf_scores, selection_criteria,
-            wordcloud_colormap, title_font_size, caption_font_size, font_step,
-            word_orientation, background_color, contour_width, contour_color
-        )
-        if wordcloud_error:
-            st.error(wordcloud_error)
-        elif wordcloud_fig:
-            st.pyplot(wordcloud_fig)
-            if save_figure(wordcloud_fig, "wordcloud"):
-                st.download_button(
-                    label="Download Word Cloud (PNG)",
-                    data=open("wordcloud.png", "rb").read(),
-                    file_name="wordcloud.png",
-                    mime="image/png"
-                )
-                st.download_button(
-                    label="Download Word Cloud (SVG)",
-                    data=open("wordcloud.svg", "rb").read(),
-                    file_name="wordcloud.svg",
-                    mime="image/svg+xml"
-                )
-        st.subheader("Knowledge Graph")
-        network_fig, network_error = generate_bibliometric_network(
-            combined_text, selected_keywords, tfidf_scores, label_font_size, selection_criteria,
-            node_colormap, edge_colormap, network_style, line_thickness, transparency, transparency,
-            title_font_size, caption_font_size, node_size_scale, node_shape, node_linewidth,
-            node_edgecolor, edge_style, label_font_color, label_font_family, label_bbox_facecolor,
-            label_bbox_alpha, layout_algorithm, label_rotation, label_offset
-        )
-        if network_error:
-            st.error(network_error)
-        elif network_fig:
-            st.pyplot(network_fig)
-            if save_figure(network_fig, "network"):
-                st.download_button(
-                    label="Download Network (PNG)",
-                    data=open("network.png", "rb").read(),
-                    file_name="network.png",
-                    mime="image/png"
-                )
-                st.download_button(
-                    label="Download Network (SVG)",
-                    data=open("network.svg", "rb").read(),
-                    file_name="network.svg",
-                    mime="image/svg+xml"
-                )
-        st.subheader("Frequency Radar Chart")
-        freq_radar_fig, freq_radar_error = generate_radar_chart(
-            selected_keywords, word_freq, "Keyword/Phrase Frequency Comparison",
-            selection_criteria, freq_radar_colormap, radar_max_keywords,
-            label_font_size, line_thickness, transparency, title_font_size, caption_font_size,
-            label_rotation, label_offset, grid_color, grid_style, grid_thickness
-        )
-        if freq_radar_error:
-            st.error(freq_radar_error)
-        elif freq_radar_fig:
-            st.pyplot(freq_radar_fig)
-            if save_figure(freq_radar_fig, "freq_radar"):
-                st.download_button(
-                    label="Download Frequency Radar (PNG)",
-                    data=open("freq_radar.png", "rb").read(),
-                    file_name="freq_radar.png",
-                    mime="image/png"
-                )
-                st.download_button(
-                    label="Download Frequency Radar (SVG)",
-                    data=open("freq_radar.svg", "rb").read(),
-                    file_name="freq_radar.svg",
-                    mime="image/svg+xml"
-                )
-        st.subheader("TF-IDF Radar Chart")
-        tfidf_radar_fig, tfidf_radar_error = generate_radar_chart(
-            selected_keywords, tfidf_scores, "Keyword/Phrase TF-IDF Comparison",
-            selection_criteria, tfidf_radar_colormap, radar_max_keywords,
-            label_font_size, line_thickness, transparency, title_font_size, caption_font_size,
-            label_rotation, label_offset, grid_color, grid_style, grid_thickness
-        )
-        if tfidf_radar_error:
-            st.error(tfidf_radar_error)
-        elif tfidf_radar_fig:
-            st.pyplot(tfidf_radar_fig)
-            if save_figure(tfidf_radar_fig, "tfidf_radar"):
-                st.download_button(
-                    label="Download TF-IDF Radar (PNG)",
-                    data=open("tfidf_radar.png", "rb").read(),
-                    file_name="tfidf_radar.png",
-                    mime="image/png"
-                )
-                st.download_button(
-                    label="Download TF-IDF Radar (SVG)",
-                    data=open("tfidf_radar.svg", "rb").read(),
-                    file_name="tfidf_radar.svg",
-                    mime="image/svg+xml"
-                )
-        st.markdown("---")
-        st.markdown("Enhanced with Streamlit, PyPDF2, WordCloud, NetworkX, NLTK, spaCy, Transformers, Matplotlib, Seaborn, PyYAML, and SQLite for dendrite growth knowledge graph analysis.")
+            except Exception as e:
+                st.error(f"Error processing keywords: {str(e)}")
+                logger.error(f"Error in get_candidate_keywords: {str(e)}")
+                st.stop()
+            
+            selected_keywords = []
+            for category in KEYWORD_CATEGORIES:
+                keywords = [term for term, _ in categorized_keywords.get(category, [])]
+                with st.expander(f"{category} ({len(keywords)} keywords/phrases)"):
+                    if keywords:
+                        selected = st.multiselect(
+                            f"Select keywords from {category}",
+                            options=keywords,
+                            default=[] if st.session_state.clear_selections else keywords[:min(5, len(keywords))],
+                            key=f"multiselect_{category}_{uuid.uuid4()}"
+                        )
+                        selected_keywords.extend(selected)
+                    else:
+                        st.write("No keywords or phrases found for this category.")
+            
+            st.session_state.clear_selections = False
+            
+            with st.expander("Debug Information"):
+                if word_freq:
+                    st.write("Single Words and Entities (Top 20):", word_freq.most_common(20))
+                if phrases:
+                    st.write("Extracted Phrases (Top 20):", phrases[:20])
+                if categorized_keywords:
+                    st.write("Categorized Keywords:", {k: [t[0] for t in v] for k, v in categorized_keywords.items()})
+            
+            with st.expander("IDF Source Details"):
+                if idf_sources:
+                    idf_data = [
+                        {
+                            "Term": term,
+                            "Frequency": idf_sources[term]["frequency"],
+                            "TF-IDF Score": round(tfidf_scores.get(term, 0), 3),
+                            "IDF Value": round(idf_sources[term]["idf"], 3),
+                            "Source": idf_sources[term]["source"]
+                        }
+                        for term in tfidf_scores
+                    ]
+                    idf_df = pd.DataFrame(idf_data).sort_values(by=["Source", "TF-IDF Score"], ascending=[True, False])
+                    def highlight_json(row):
+                        return ["font-weight: bold" if row["Source"] == "JSON" else "" for _ in row]
+                    source_filter = st.selectbox("Filter by IDF Source", ["All", "JSON", "Estimated"])
+                    if source_filter != "All":
+                        idf_df = idf_df[idf_df["Source"] == source_filter]
+                    styled_df = idf_df.style.apply(highlight_json, axis=1).format({"TF-IDF Score": "{:.3f}", "IDF Value": "{:.3f}"})
+                    st.dataframe(styled_df, use_container_width=True)
+                    st.download_button(
+                        label="Download IDF Sources (JSON)",
+                        data=json.dumps(idf_data, indent=4),
+                        file_name="idf_sources.json",
+                        mime="application/json"
+                    )
+            
+            if not selected_keywords:
+                st.error("Please select at least one keyword or phrase.")
+                st.stop()
+            
+            st.subheader("Visualization Settings")
+            st.markdown("### General Visualization Settings")
+            label_font_size = st.slider("Label font size", min_value=8, max_value=24, value=12, step=1)
+            line_thickness = st.slider("Line thickness", min_value=0.5, max_value=6.0, value=2.5, step=0.5)
+            title_font_size = st.slider("Title font size", min_value=10, max_value=24, value=16, step=1)
+            caption_font_size = st.slider("Caption font size", min_value=8, max_value=16, value=10, step=1)
+            transparency = st.slider("Transparency (nodes, edges, fills)", min_value=0.1, max_value=1.0, value=0.8, step=0.1)
+            label_rotation = st.slider("Label rotation (degrees)", min_value=0, max_value=90, value=0, step=5)
+            label_offset = st.slider("Label offset", min_value=0.0, max_value=0.1, value=0.02, step=0.01)
+            criteria_parts.extend([
+                f"label font size: {label_font_size}",
+                f"line thickness: {line_thickness}",
+                f"title font size: {title_font_size}",
+                f"caption font size: {caption_font_size}",
+                f"transparency: {transparency}",
+                f"label rotation: {label_rotation}°",
+                f"label offset: {label_offset}"
+            ])
+            
+            st.markdown("### Word Cloud Settings")
+            wordcloud_colormap = st.selectbox("Select colormap for word cloud", options=COLORMAPS, index=0)
+            word_orientation = st.selectbox("Word orientation", options=WORD_ORIENTATIONS, index=0)
+            font_step = st.slider("Font size step", min_value=1, max_value=10, value=2, step=1)
+            background_color = st.selectbox("Background color", options=['white', 'black', 'lightgray'], index=0)
+            contour_width = st.slider("Contour width", min_value=0.0, max_value=5.0, value=0.0, step=0.5)
+            contour_color = st.selectbox("Contour color", options=COLORS, index=0)
+            criteria_parts.extend([
+                f"word cloud colormap: {wordcloud_colormap}",
+                f"word orientation: {word_orientation}",
+                f"font step: {font_step}",
+                f"background color: {background_color}",
+                f"contour width: {contour_width}",
+                f"contour color: {contour_color}"
+            ])
+            
+            st.markdown("### Network Settings")
+            network_style = st.selectbox("Select style for network", options=NETWORK_STYLES, index=0)
+            node_colormap = st.selectbox("Select colormap for network nodes", options=COLORMAPS, index=0)
+            edge_colormap = st.selectbox("Select colormap for network edges", options=COLORMAPS, index=7)
+            layout_algorithm = st.selectbox("Select layout algorithm", options=LAYOUT_ALGORITHMS, index=0)
+            node_size_scale = st.slider("Node size scale", min_value=10, max_value=100, value=50, step=5)
+            node_shape = st.selectbox("Node shape", options=NODE_SHAPES, index=0)
+            node_linewidth = st.slider("Node border thickness", min_value=0.5, max_value=5.0, value=1.5, step=0.5)
+            node_edgecolor = st.selectbox("Node border color", options=COLORS, index=0)
+            edge_style = st.selectbox("Edge style", options=EDGE_STYLES, index=0)
+            label_font_color = st.selectbox("Label font color", options=COLORS, index=0)
+            label_font_family = st.selectbox("Label font family", options=FONT_FAMILIES, index=0)
+            label_bbox_facecolor = st.selectbox("Label background color", options=BBOX_COLORS, index=0)
+            label_bbox_alpha = st.slider("Label background transparency", min_value=0.1, max_value=1.0, value=0.6, step=0.1)
+            criteria_parts.extend([
+                f"network style: {network_style}",
+                f"node colormap: {node_colormap}",
+                f"edge colormap: {edge_colormap}",
+                f"layout: {layout_algorithm}",
+                f"node size scale: {node_size_scale}",
+                f"node shape: {node_shape}",
+                f"node border thickness: {node_linewidth}",
+                f"node border color: {node_edgecolor}",
+                f"edge style: {edge_style}",
+                f"label font color: {label_font_color}",
+                f"label font family: {label_font_family}",
+                f"label background color: {label_bbox_facecolor}",
+                f"label background transparency: {label_bbox_alpha}"
+            ])
+            
+            st.markdown("### Radar Chart Settings")
+            radar_max_keywords = st.slider("Number of keywords for radar charts", min_value=3, max_value=12, value=6, step=1)
+            freq_radar_colormap = st.selectbox("Colormap for frequency radar chart", options=COLORMAPS, index=0)
+            tfidf_radar_colormap = st.selectbox("Colormap for TF-IDF radar chart", options=COLORMAPS, index=0)
+            grid_color = st.selectbox("Grid color", options=COLORS, index=0)
+            grid_style = st.selectbox("Grid style", options=EDGE_STYLES, index=0)
+            grid_thickness = st.slider("Grid thickness", min_value=0.5, max_value=5.0, value=2.0, step=0.5)
+            criteria_parts.extend([
+                f"radar max keywords: {radar_max_keywords}",
+                f"frequency radar colormap: {freq_radar_colormap}",
+                f"tfidf radar colormap: {tfidf_radar_colormap}",
+                f"grid color: {grid_color}",
+                f"grid style: {grid_style}",
+                f"grid thickness: {grid_thickness}"
+            ])
+            
+            selection_criteria = ", ".join(criteria_parts)
+            
+            st.subheader("Word Cloud")
+            wordcloud_fig, wordcloud_error = generate_word_cloud(
+                combined_text, selected_keywords, tfidf_scores, selection_criteria,
+                wordcloud_colormap, title_font_size, caption_font_size, font_step,
+                word_orientation, background_color, contour_width, contour_color
+            )
+            if wordcloud_error:
+                st.error(wordcloud_error)
+            elif wordcloud_fig:
+                st.pyplot(wordcloud_fig)
+                if save_figure(wordcloud_fig, "wordcloud"):
+                    st.download_button(
+                        label="Download Word Cloud (PNG)",
+                        data=open("wordcloud.png", "rb").read(),
+                        file_name="wordcloud.png",
+                        mime="image/png"
+                    )
+                    st.download_button(
+                        label="Download Word Cloud (SVG)",
+                        data=open("wordcloud.svg", "rb").read(),
+                        file_name="wordcloud.svg",
+                        mime="image/svg+xml"
+                    )
+            
+            st.subheader("Knowledge Graph")
+            network_fig, network_error = generate_bibliometric_network(
+                combined_text, selected_keywords, tfidf_scores, label_font_size, selection_criteria,
+                node_colormap, edge_colormap, network_style, line_thickness, transparency, transparency,
+                title_font_size, caption_font_size, node_size_scale, node_shape, node_linewidth,
+                node_edgecolor, edge_style, label_font_color, label_font_family, label_bbox_facecolor,
+                label_bbox_alpha, layout_algorithm, label_rotation, label_offset
+            )
+            if network_error:
+                st.error(network_error)
+            elif network_fig:
+                st.pyplot(network_fig)
+                if save_figure(network_fig, "network"):
+                    st.download_button(
+                        label="Download Network (PNG)",
+                        data=open("network.png", "rb").read(),
+                        file_name="network.png",
+                        mime="image/png"
+                    )
+                    st.download_button(
+                        label="Download Network (SVG)",
+                        data=open("network.svg", "rb").read(),
+                        file_name="network.svg",
+                        mime="image/svg+xml"
+                    )
+            
+            st.subheader("Frequency Radar Chart")
+            freq_radar_fig, freq_radar_error = generate_radar_chart(
+                selected_keywords, word_freq, "Keyword/Phrase Frequency Comparison",
+                selection_criteria, freq_radar_colormap, radar_max_keywords,
+                label_font_size, line_thickness, transparency, title_font_size, caption_font_size,
+                label_rotation, label_offset, grid_color, grid_style, grid_thickness
+            )
+            if freq_radar_error:
+                st.error(freq_radar_error)
+            elif freq_radar_fig:
+                st.pyplot(freq_radar_fig)
+                if save_figure(freq_radar_fig, "freq_radar"):
+                    st.download_button(
+                        label="Download Frequency Radar (PNG)",
+                        data=open("freq_radar.png", "rb").read(),
+                        file_name="freq_radar.png",
+                        mime="image/png"
+                    )
+                    st.download_button(
+                        label="Download Frequency Radar (SVG)",
+                        data=open("freq_radar.svg", "rb").read(),
+                        file_name="freq_radar.svg",
+                        mime="image/svg+xml"
+                    )
+            
+            st.subheader("TF-IDF Radar Chart")
+            tfidf_radar_fig, tfidf_radar_error = generate_radar_chart(
+                selected_keywords, tfidf_scores, "Keyword/Phrase TF-IDF Comparison",
+                selection_criteria, tfidf_radar_colormap, radar_max_keywords,
+                label_font_size, line_thickness, transparency, title_font_size, caption_font_size,
+                label_rotation, label_offset, grid_color, grid_style, grid_thickness
+            )
+            if tfidf_radar_error:
+                st.error(tfidf_radar_error)
+            elif tfidf_radar_fig:
+                st.pyplot(tfidf_radar_fig)
+                if save_figure(tfidf_radar_fig, "tfidf_radar"):
+                    st.download_button(
+                        label="Download TF-IDF Radar (PNG)",
+                        data=open("tfidf_radar.png", "rb").read(),
+                        file_name="tfidf_radar.png",
+                        mime="image/png"
+                    )
+                    st.download_button(
+                        label="Download TF-IDF Radar (SVG)",
+                        data=open("tfidf_radar.svg", "rb").read(),
+                        file_name="tfidf_radar.svg",
+                        mime="image/svg+xml"
+                    )
+            
+            st.markdown("---")
+            st.markdown("Enhanced with Streamlit, PyPDF2, WordCloud, NetworkX, NLTK, spaCy, Transformers, Matplotlib, Seaborn, PyYAML, and SQLite for dendrite growth knowledge graph analysis.")
+
+else:
+    st.info("Please upload one or more PDF files to begin.")
