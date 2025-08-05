@@ -35,17 +35,19 @@ except ImportError:
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-# Download NLTK and spaCy data
+# Download NLTK data
 def download_nltk_data():
     try:
         nltk.data.find('tokenizers/punkt_tab')
         nltk.data.find('corpora/stopwords')
-        logger.info("NLTK data already present.")
+        nltk.data.find('taggers/averaged_perceptron_tagger_eng')
+        logger.info("NLTK data (punkt_tab, stopwords, averaged_perceptron_tagger_eng) already present.")
     except LookupError:
         try:
-            logger.info("Downloading NLTK punkt_tab and stopwords...")
+            logger.info("Downloading NLTK punkt_tab, stopwords, and averaged_perceptron_tagger_eng...")
             nltk.download('punkt_tab', quiet=True)
             nltk.download('stopwords', quiet=True)
+            nltk.download('averaged_perceptron_tagger_eng', quiet=True)
             logger.info("NLTK data downloaded successfully.")
         except Exception as e:
             logger.error(f"Failed to download NLTK data: {str(e)}")
