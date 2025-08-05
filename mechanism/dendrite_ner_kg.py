@@ -24,6 +24,12 @@ import pandas as pd
 import yaml
 from transformers import AutoTokenizer, AutoModelForTokenClassification, pipeline
 from datetime import datetime
+try:
+    import pdfplumber
+    PDFPLUMBER_AVAILABLE = True
+except ImportError:
+    PDFPLUMBER_AVAILABLE = False
+    logging.warning("pdfplumber not installed. Falling back to PyPDF2 only.")
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -416,20 +422,57 @@ def save_to_databases(file, full_text, extracted_text):
         metadata_conn.close()
         text_conn.close()
 
-# Extract text from PDF
+# Extract text from PDF with fallback to pdfplumber
 def extract_text_from_pdf(file):
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-            tmp_file.write(file.read())
-            tmp_file_path = tmp_file.name
-        pdf_reader = PyPDF2.PdfReader(tmp_file_path)
-        text = ""
-        for page in pdf_reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-        os.unlink(tmp_file_path)
-        return text if text.strip() else f"No text extracted from {file.name}."
+        # Check if file is empty
+        file.seek(0)
+        if len(file.read()) == 0:
+            raise ValueError(f"File {file.name} is empty.")
+        file.seek(0)
+        
+        # Try PyPDF2 first
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                tmp_file.write(file.read())
+                tmp_file_path = tmp_file.name
+            pdf_reader = PyPDF2.PdfReader(tmp_file_path)
+            text = ""
+            for page in pdf_reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+            os.unlink(tmp_file_path)
+            if text.strip():
+                return text
+            logger.warning(f"No text extracted from {file.name} using PyPDF2. Trying pdfplumber if available.")
+        except Exception as e:
+            logger.error(f"PyPDF2 failed for {file.name}: {str(e)}")
+        
+        # Fallback to pdfplumber if available
+        if PDFPLUMBER_AVAILABLE:
+            try:
+                file.seek(0)
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                    tmp_file.write(file.read())
+                    tmp_file_path = tmp_file.name
+                with pdfplumber.open(tmp_file_path) as pdf:
+                    text = ""
+                    for page in pdf.pages:
+                        page_text = page.extract_text()
+                        if page_text:
+                            text += page_text + "\n"
+                os.unlink(tmp_file_path)
+                if text.strip():
+                    return text
+                else:
+                    return f"No text extracted from {file.name} using pdfplumber."
+            except Exception as e:
+                logger.error(f"pdfplumber failed for {file.name}: {str(e)}")
+                return f"Error extracting text from {file.name}: {str(e)}"
+        else:
+            return f"No text extracted from {file.name}. Install pdfplumber for better extraction."
+    
     except Exception as e:
         logger.error(f"Error extracting text from {file.name}: {str(e)}")
         return f"Error extracting text from {file.name}: {str(e)}"
@@ -437,6 +480,8 @@ def extract_text_from_pdf(file):
 # Validate text extraction for a PDF with given phrases
 def validate_text_extraction(text, start_phrase, end_phrase, file_name):
     try:
+        if "Error" in text or "No text extracted" in text:
+            return False, text
         start_idx = text.lower().find(start_phrase.lower())
         end_idx = text.lower().find(end_phrase.lower(), start_idx + len(start_phrase))
         if start_idx == -1 or end_idx == -1:
@@ -501,6 +546,8 @@ if 'all_validated' not in st.session_state:
     st.session_state.all_validated = False
 if 'extracted_texts' not in st.session_state:
     st.session_state.extracted_texts = {}
+if 'skipped_files' not in st.session_state:
+    st.session_state.skipped_files = []
 
 # NER processing with spaCy and SciBERT
 def perform_ner(text):
@@ -819,8 +866,7 @@ def generate_radar_chart(selected_keywords, values, title, selection_criteria, c
         ax.xaxis.grid(True, color=grid_color, linestyle=grid_style, linewidth=grid_thickness, alpha=0.7)
         ax.set_title(title, fontsize=title_font_size, pad=30, fontweight='bold')
         caption = f"{title} generated with: {selection_criteria}"
-        plt.figtext(0.5, 0.02, caption, ha="center", fontsize=caption_font_size, wrap=True,
-            bbox=dict(facecolor='white', edgecolor='black', boxstyle='round,pad=0.5'))
+        plt.figtext(0.5, 0.02, caption, ha="center", fontsize=caption_font_size, wrap=True, bbox=dict(facecolor='white', edgecolor='black', boxstyle='round,pad=0.5'))
         plt.tight_layout(rect=[0, 0.1, 1, 0.95])
         ax.set_facecolor('#fafafa')
         return fig, None
@@ -857,6 +903,8 @@ Upload one or more PDF files to extract text, perform NER, and generate visualiz
 material properties, battery behavior, and characterization techniques of dendrite growth in lithium-based batteries. 
 Optionally upload a YAML file to define custom keyword categories.
 """)
+if not PDFPLUMBER_AVAILABLE:
+    st.warning("pdfplumber is not installed. Text extraction may be less reliable. Install with `pip install pdfplumber` for better PDF handling.")
 
 # YAML file uploader
 yaml_file = st.file_uploader("Upload a YAML file with keyword categories (optional)", type="yaml")
@@ -878,6 +926,9 @@ uploaded_files = st.file_uploader("Upload one or more PDF files", type="pdf", ac
 if uploaded_files:
     st.subheader("Specify Extraction Phrases for Each PDF")
     all_valid = True
+    valid_files = []
+    st.session_state.skipped_files = []
+    
     for file in uploaded_files:
         with st.expander(f"Phrases for {file.name}"):
             # Initialize session state for phrases if not already set
@@ -905,11 +956,14 @@ if uploaded_files:
             
             # Validate text extraction
             full_text = extract_text_from_pdf(file)
-            if "Error" in full_text:
+            if "Error" in full_text or "No text extracted" in full_text:
                 st.error(full_text)
                 st.session_state.validation_results[file.name] = (False, full_text)
+                st.session_state.skipped_files.append(file.name)
                 all_valid = False
                 continue
+            else:
+                valid_files.append(file)
             
             is_valid, message = validate_text_extraction(full_text, start_phrase, end_phrase, file.name)
             st.session_state.validation_results[file.name] = (is_valid, message)
@@ -922,14 +976,18 @@ if uploaded_files:
     
     st.session_state.all_validated = all_valid
     
+    # Display skipped files
+    if st.session_state.skipped_files:
+        st.warning(f"Skipped files due to extraction errors: {', '.join(st.session_state.skipped_files)}")
+    
     # Button to proceed with extraction
-    if st.button("Proceed with Text Extraction", disabled=not all_valid):
+    if valid_files and st.button("Proceed with Text Extraction", disabled=not all_valid):
         with st.spinner("Extracting text from PDFs..."):
             combined_text = ""
             extraction_errors = []
-            for file in uploaded_files:
+            for file in valid_files:
                 full_text = extract_text_from_pdf(file)
-                if "Error" in full_text:
+                if "Error" in full_text or "No text extracted" in full_text:
                     extraction_errors.append(full_text)
                     continue
                 
