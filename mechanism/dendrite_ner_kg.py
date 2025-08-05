@@ -819,7 +819,7 @@ def generate_radar_chart(selected_keywords, values, title, selection_criteria, c
         ax.xaxis.grid(True, color=grid_color, linestyle=grid_style, linewidth=grid_thickness, alpha=0.7)
         ax.set_title(title, fontsize=title_font_size, pad=30, fontweight='bold')
         caption = f"{title} generated with: {selection_criteria}"
-        plt.figtext(0.5, 0.02, caption, ha="center", fontsize=caption_font_size, wrap=True, bbox=dict(facecolor='white edgecolor='black', boxstyle='round,pad=0.5'))
+        plt.figtext(0.5, 0.02, caption, ha="center", fontsize=caption_font_size, wrap=True, bbox=dict(facecolor='white edgecolor='black', boxstyle='round',pad='0.5'))
         plt.tight_layout(rect=[0, 0.1, 1, 0.95])
         ax.set_facecolor('#fafafa')
         return fig, None
